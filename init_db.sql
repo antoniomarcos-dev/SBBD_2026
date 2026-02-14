@@ -109,6 +109,7 @@ CREATE INDEX IF NOT EXISTS idx_rasters_rast
 
 -- Função 1: Calcular raster delta via ST_MapAlgebra
 -- Gera raster onde cada pixel = classe_t1 * 100 + classe_t2
+-- Reprojeção (ST_Transform) + Alinhamento (ST_Resample) automáticos
 CREATE OR REPLACE FUNCTION fn_calcular_delta(
     p_raster_t1_id INTEGER,
     p_raster_t2_id INTEGER
@@ -116,7 +117,11 @@ CREATE OR REPLACE FUNCTION fn_calcular_delta(
 DECLARE
     v_rast1 RASTER;
     v_rast2 RASTER;
+    v_rast2_reprojected RASTER;
+    v_rast2_aligned RASTER;
     v_delta RASTER;
+    v_srid1 INTEGER;
+    v_srid2 INTEGER;
 BEGIN
     SELECT rast INTO v_rast1 FROM rasters_temporais WHERE id = p_raster_t1_id;
     SELECT rast INTO v_rast2 FROM rasters_temporais WHERE id = p_raster_t2_id;
@@ -125,10 +130,27 @@ BEGIN
         RAISE EXCEPTION 'Raster(s) não encontrado(s)';
     END IF;
 
+    v_srid1 := ST_SRID(v_rast1);
+    v_srid2 := ST_SRID(v_rast2);
+
+    -- Se SRIDs diferentes, reprojetar rast2 para o SRID de rast1
+    IF v_srid1 != v_srid2 THEN
+        v_rast2_reprojected := ST_Transform(v_rast2, v_srid1, 'NearestNeighbor');
+    ELSE
+        v_rast2_reprojected := v_rast2;
+    END IF;
+
+    -- Alinhar rast2 ao grid de rast1 (NearestNeighbor preserva classes)
+    v_rast2_aligned := ST_Resample(
+        v_rast2_reprojected,
+        v_rast1,
+        'NearestNeighbor'
+    );
+
     -- MapAlgebra: pixel = classe_t1 * 100 + classe_t2
     v_delta := ST_MapAlgebra(
         v_rast1, 1,
-        v_rast2, 1,
+        v_rast2_aligned, 1,
         '[rast1.val] * 100 + [rast2.val]',
         '32BF',          -- pixel type float32
         'INTERSECTION',  -- apenas área de sobreposição
@@ -143,6 +165,7 @@ $$ LANGUAGE plpgsql;
 
 -- Função 2: Extrair hotspots (polígonos de mudança) do delta raster
 -- Insere diretamente na tabela hotspot_deltas
+-- Todos os valores são convertidos para INTEGER (pixels são classes inteiras)
 CREATE OR REPLACE FUNCTION fn_extrair_hotspots(
     p_raster_t1_id INTEGER,
     p_raster_t2_id INTEGER
@@ -154,6 +177,10 @@ DECLARE
     v_srid INTEGER;
     v_count INTEGER := 0;
     v_rec RECORD;
+    v_cod INTEGER;
+    v_origem INTEGER;
+    v_destino INTEGER;
+    v_geom_4326 GEOMETRY;
 BEGIN
     -- Obter anos
     SELECT ano INTO v_ano_ini FROM rasters_temporais WHERE id = p_raster_t1_id;
@@ -168,19 +195,34 @@ BEGIN
     WHERE raster_t1_id = p_raster_t1_id AND raster_t2_id = p_raster_t2_id;
 
     -- Extrair polígonos dos pixels de mudança
-    -- Um pixel com código de transição X*100+Y não mudou se X == Y (ex: 303, 1515)
     FOR v_rec IN
         SELECT
-            (gv).val AS codigo_transicao,
+            ((gv).val)::INTEGER AS codigo_transicao,
             (gv).geom AS geom
         FROM (
             SELECT ST_DumpAsPolygons(v_delta) AS gv
         ) AS sub
         WHERE (gv).val IS NOT NULL
           AND (gv).val > 0
-          -- Filtrar: só manter onde classe origem != classe destino
-          AND FLOOR((gv).val / 100) != ((gv).val % 100)
     LOOP
+        v_cod := v_rec.codigo_transicao;
+        v_origem := v_cod / 100;
+        v_destino := v_cod % 100;
+
+        -- Pular onde não houve mudança (ex: 303, 1515)
+        IF v_origem = v_destino THEN
+            CONTINUE;
+        END IF;
+
+        -- Converter geometria para 4326
+        IF v_srid > 0 AND v_srid != 4326 THEN
+            v_geom_4326 := ST_Transform(v_rec.geom, 4326);
+        ELSIF v_srid = 4326 THEN
+            v_geom_4326 := v_rec.geom;
+        ELSE
+            v_geom_4326 := ST_SetSRID(v_rec.geom, 4326);
+        END IF;
+
         INSERT INTO hotspot_deltas (
             raster_t1_id, raster_t2_id,
             ano_inicio, ano_fim,
@@ -190,20 +232,9 @@ BEGIN
         ) VALUES (
             p_raster_t1_id, p_raster_t2_id,
             v_ano_ini, v_ano_fim,
-            FLOOR(v_rec.codigo_transicao / 100)::INTEGER,
-            (v_rec.codigo_transicao::INTEGER % 100),
-            v_rec.codigo_transicao::INTEGER,
-            CASE WHEN v_srid != 4326 AND v_srid > 0
-                 THEN ST_Transform(v_rec.geom, 4326)
-                 ELSE ST_SetSRID(v_rec.geom, 4326)
-            END,
-            -- Área em hectares (usando geografia para precisão)
-            ST_Area(
-                CASE WHEN v_srid != 4326 AND v_srid > 0
-                     THEN ST_Transform(v_rec.geom, 4326)
-                     ELSE ST_SetSRID(v_rec.geom, 4326)
-                END::geography
-            ) / 10000.0
+            v_origem, v_destino, v_cod,
+            v_geom_4326,
+            ST_Area(v_geom_4326::geography) / 10000.0
         );
         v_count := v_count + 1;
     END LOOP;
@@ -211,6 +242,7 @@ BEGIN
     RETURN v_count;
 END;
 $$ LANGUAGE plpgsql;
+
 
 -- Função 3: Estatísticas de perda por tipo de transição
 CREATE OR REPLACE FUNCTION fn_estatisticas_perda(

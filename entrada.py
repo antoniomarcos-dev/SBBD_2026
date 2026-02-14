@@ -19,6 +19,9 @@ import psycopg2
 import psycopg2.extras
 from PIL import Image
 
+# Remover limite de pixels (rasters MapBiomas podem ter 200M+ pixels)
+Image.MAX_IMAGE_PIXELS = None
+
 # ---------------------------------------------------------------------------
 # Configuração
 # ---------------------------------------------------------------------------
@@ -343,42 +346,45 @@ def hotspots():
 # ---------------------------------------------------------------------------
 @app.route("/hotspots/geojson")
 def hotspots_geojson():
-    """Retorna polígonos de mudança em formato GeoJSON."""
+    """Retorna polígonos de mudança em formato GeoJSON (limitado para performance)."""
     codigo = request.args.get("transicao", type=int)
     ano_ini = request.args.get("ano_inicio", type=int)
     ano_fim = request.args.get("ano_fim", type=int)
+    limit = request.args.get("limit", 5000, type=int)
+    simplify = request.args.get("simplify", 0.001, type=float)
 
     try:
         conn = get_db()
         cur = conn.cursor()
 
+        # Subquery com LIMIT para não explodir a memória
         query = """
             SELECT json_build_object(
                 'type', 'FeatureCollection',
-                'features', COALESCE(json_agg(
-                    json_build_object(
-                        'type', 'Feature',
-                        'geometry', ST_AsGeoJSON(hd.geom)::json,
-                        'properties', json_build_object(
-                            'id', hd.id,
-                            'ano_inicio', hd.ano_inicio,
-                            'ano_fim', hd.ano_fim,
-                            'classe_origem', hd.classe_origem,
-                            'classe_destino', hd.classe_destino,
-                            'codigo_transicao', hd.codigo_transicao,
-                            'area_ha', hd.area_ha,
-                            'nome_origem', COALESCE(lo.nome, 'Desconhecida'),
-                            'nome_destino', COALESCE(ld.nome, 'Desconhecida')
-                        )
-                    )
-                ), '[]'::json)
+                'features', COALESCE(json_agg(f.feature), '[]'::json)
             )
-            FROM hotspot_deltas hd
-            LEFT JOIN legenda_classes lo ON lo.codigo = hd.classe_origem
-            LEFT JOIN legenda_classes ld ON ld.codigo = hd.classe_destino
-            WHERE 1=1
+            FROM (
+                SELECT json_build_object(
+                    'type', 'Feature',
+                    'geometry', ST_AsGeoJSON(ST_Simplify(hd.geom, %s))::json,
+                    'properties', json_build_object(
+                        'id', hd.id,
+                        'ano_inicio', hd.ano_inicio,
+                        'ano_fim', hd.ano_fim,
+                        'classe_origem', hd.classe_origem,
+                        'classe_destino', hd.classe_destino,
+                        'codigo_transicao', hd.codigo_transicao,
+                        'area_ha', hd.area_ha,
+                        'nome_origem', COALESCE(lo.nome, 'Desconhecida'),
+                        'nome_destino', COALESCE(ld.nome, 'Desconhecida')
+                    )
+                ) AS feature
+                FROM hotspot_deltas hd
+                LEFT JOIN legenda_classes lo ON lo.codigo = hd.classe_origem
+                LEFT JOIN legenda_classes ld ON ld.codigo = hd.classe_destino
+                WHERE 1=1
         """
-        params = []
+        params = [simplify]
 
         if codigo:
             query += " AND hd.codigo_transicao = %s"
@@ -389,6 +395,9 @@ def hotspots_geojson():
         if ano_fim:
             query += " AND hd.ano_fim <= %s"
             params.append(ano_fim)
+
+        query += " ORDER BY hd.area_ha DESC LIMIT %s) AS f"
+        params.append(limit)
 
         cur.execute(query, params)
         geojson = cur.fetchone()[0]
@@ -403,6 +412,68 @@ def hotspots_geojson():
 
     except Exception as e:
         return jsonify({"erro": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Rotas — Mapa interativo (Leaflet)
+# ---------------------------------------------------------------------------
+@app.route("/mapa")
+def mapa():
+    """Página com mapa Leaflet para visualizar os hotspots."""
+    return """<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<title>Mapa de Hotspots — Cerrado</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+    body{margin:0;font-family:Inter,sans-serif;background:#0a0a14}
+    #map{width:100%;height:100vh}
+    .info-box{position:absolute;top:10px;right:10px;z-index:1000;background:rgba(10,10,20,0.9);
+        color:#e8e8f0;padding:12px 16px;border-radius:12px;font-size:13px;
+        border:1px solid rgba(255,255,255,0.1);backdrop-filter:blur(10px);max-width:300px}
+    .info-box h3{margin:0 0 6px;font-size:14px;color:#10b981}
+    .legend-item{display:flex;align-items:center;gap:6px;margin:3px 0}
+    .legend-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+</style>
+</head><body>
+<div id="map"></div>
+<div class="info-box">
+    <h3>🔥 Hotspots de Mudança</h3>
+    <p id="status">Carregando...</p>
+    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> Desmatamento</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> Outras mudanças</div>
+</div>
+<script>
+const map = L.map('map').setView([-15.5, -47.5], 6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+    attribution:'CartoDB',maxZoom:19}).addTo(map);
+
+fetch('/hotspots/geojson?limit=10000&simplify=0.0005')
+    .then(r=>r.json())
+    .then(data=>{
+        const layer = L.geoJSON(data,{
+            style:f=>{
+                const o=f.properties.classe_origem, d=f.properties.classe_destino;
+                const desmat = [3,4,5,6,49].includes(o) && [15,18,19,20,21,24,39,41].includes(d);
+                return {color:desmat?'#ef4444':'#f59e0b',weight:0.5,opacity:0.7,
+                    fillColor:desmat?'#ef4444':'#f59e0b',fillOpacity:0.4};
+            },
+            onEachFeature:(f,l)=>{
+                const p=f.properties;
+                l.bindPopup('<b>'+p.nome_origem+' → '+p.nome_destino+'</b><br>'+
+                    'Período: '+p.ano_inicio+'→'+p.ano_fim+'<br>'+
+                    'Área: '+Number(p.area_ha).toFixed(4)+' ha<br>'+
+                    'Código: '+p.codigo_transicao);
+            }
+        }).addTo(map);
+        if(data.features.length>0) map.fitBounds(layer.getBounds());
+        document.getElementById('status').textContent=data.features.length+' hotspots exibidos';
+    })
+    .catch(e=>document.getElementById('status').textContent='Erro: '+e.message);
+</script>
+</body></html>"""
 
 
 # ---------------------------------------------------------------------------
