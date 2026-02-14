@@ -694,12 +694,12 @@
                         <div class="raster-actions">
                             <button class="btn btn-sm btn-process-single"
                                 onclick="processarRaster({{ r.id }}, '{{ r.nome }}')">
-                                ⚙️ Info
+                                ⚙️ Informações
                             </button>
                             <form action="/excluir/{{ r.id }}" method="POST" style="flex:1"
                                 onsubmit="return confirm('Excluir este raster e seus hotspots?')">
                                 <button type="submit" class="btn btn-sm btn-delete" style="width:100%">
-                                    🗑️
+                                    🗑️ Excluir
                                 </button>
                             </form>
                         </div>
