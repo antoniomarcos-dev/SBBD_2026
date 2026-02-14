@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="Spatio-Temporal Hotspot Indexing — Monitoramento de Perda de Vegetação no Cerrado">
+    <title>SBBD — Hotspot Indexing · Cerrado</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a14;
+            --bg-secondary: #12122a;
+            --bg-card: rgba(22, 22, 50, 0.7);
+            --bg-glass: rgba(255, 255, 255, 0.03);
+            --border-glass: rgba(255, 255, 255, 0.07);
+            --text-primary: #e8e8f0;
+            --text-secondary: #9898b0;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-purple: #7c3aed;
+            --accent-blue: #3b82f6;
+            --accent-gradient: linear-gradient(135deg, #10b981 0%, #3b82f6 50%, #7c3aed 100%);
+            --danger-gradient: linear-gradient(135deg, #ef4444 0%, #f59e0b 100%);
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            --radius-xl: 24px;
+            --shadow-glow: 0 0 40px rgba(16, 185, 129, 0.1);
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.15) 0%, transparent 70%);
+            top: -200px;
+            left: -100px;
+            border-radius: 50%;
+            filter: blur(100px);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+
+        header h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.4rem;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            font-weight: 300;
+        }
+
+        /* Flash messages */
+        .flash {
+            padding: 0.8rem 1.2rem;
+            border-radius: var(--radius-md);
+            margin-bottom: 0.5rem;
+            font-size: 0.88rem;
+            font-weight: 500;
+            backdrop-filter: blur(20px);
+            border: 1px solid;
+            animation: slideDown 0.35s ease;
+        }
+
+        .flash.success {
+            background: rgba(16, 185, 129, 0.1);
+            border-color: rgba(16, 185, 129, 0.25);
+            color: #6ee7b7;
+        }
+
+        .flash.error {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: rgba(239, 68, 68, 0.25);
+            color: #fca5a5;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Sections */
+        .section {
+            background: var(--bg-card);
+            backdrop-filter: blur(30px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-xl);
+            padding: 2rem;
+            margin-bottom: 2rem;
+            transition: var(--transition);
+        }
+
+        .section:hover {
+            border-color: rgba(16, 185, 129, 0.15);
+        }
+
+        .section h2 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 1.2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Upload form */
+        .upload-row {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .form-group {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 0.4rem;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 0.65rem 0.9rem;
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: var(--transition);
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--accent-green);
+            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+        }
+
+        .form-group input[type="file"] {
+            padding: 0.5rem;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.65rem 1.5rem;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn-primary {
+            background: var(--accent-gradient);
+            color: #fff;
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.25);
+        }
+
+        .btn-danger {
+            background: var(--danger-gradient);
+            color: #fff;
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-sm {
+            padding: 0.45rem 0.9rem;
+            font-size: 0.8rem;
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--border-glass);
+            color: var(--text-secondary);
+        }
+
+        .btn-outline:hover {
+            background: var(--bg-glass);
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+        }
+
+        /* Rasters grid */
+        .rasters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+        }
+
+        .raster-card {
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            transition: var(--transition);
+            animation: fadeIn 0.4s ease;
+        }
+
+        .raster-card:hover {
+            border-color: rgba(16, 185, 129, 0.25);
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-glow);
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(15px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .raster-thumb {
+            width: 100%;
+            height: 160px;
+            object-fit: cover;
+            background: var(--bg-secondary);
+        }
+
+        .raster-body {
+            padding: 1rem;
+        }
+
+        .raster-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            word-break: break-all;
+            margin-bottom: 0.5rem;
+        }
+
+        .badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .badge {
+            padding: 0.2rem 0.5rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-glass);
+            border-radius: 100px;
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .badge-year {
+            background: rgba(16, 185, 129, 0.12);
+            border-color: rgba(16, 185, 129, 0.2);
+            color: #6ee7b7;
+        }
+
+        .raster-actions {
+            display: flex;
+            gap: 0.4rem;
+        }
+
+        .raster-actions .btn {
+            flex: 1;
+            justify-content: center;
+        }
+
+        .btn-process-single {
+            background: rgba(59, 130, 246, 0.12);
+            color: #93c5fd;
+            border: 1px solid rgba(59, 130, 246, 0.2);
+        }
+
+        .btn-delete {
+            background: rgba(239, 68, 68, 0.08);
+            color: #fca5a5;
+            border: 1px solid rgba(239, 68, 68, 0.12);
+        }
+
+        /* Delta detection */
+        .delta-form {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .delta-form .form-group {
+            min-width: 180px;
+        }
+
+        .delta-arrow {
+            font-size: 1.5rem;
+            padding-bottom: 0.5rem;
+            color: var(--accent-red);
+        }
+
+        /* Hotspot results table */
+        .hotspot-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        .hotspot-table th {
+            text-align: left;
+            padding: 0.7rem 0.8rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border-glass);
+        }
+
+        .hotspot-table td {
+            padding: 0.6rem 0.8rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            color: var(--text-primary);
+        }
+
+        .hotspot-table tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .color-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 0.3rem;
+            vertical-align: middle;
+        }
+
+        .transition-arrow {
+            color: var(--accent-red);
+            font-weight: 700;
+            margin: 0 0.3rem;
+        }
+
+        /* Resumo boxes */
+        .resumo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .resumo-box {
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-md);
+            padding: 1.2rem;
+            text-align: center;
+        }
+
+        .resumo-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .resumo-label {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            margin-top: 0.3rem;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(8px);
+            z-index: 100;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-xl);
+            max-width: 700px;
+            width: 100%;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 2rem;
+            animation: modalIn 0.3s ease;
+        }
+
+        @keyframes modalIn {
+            from {
+                opacity: 0;
+                transform: scale(0.95);
+            }
+
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .modal h3 {
+            font-size: 1.15rem;
+            margin-bottom: 1.2rem;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .result-block {
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-md);
+            padding: 1rem;
+            margin-bottom: 0.6rem;
+        }
+
+        .result-block h4 {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--accent-green);
+            margin-bottom: 0.4rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .result-block pre {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-all;
+            line-height: 1.5;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.15);
+            border-top-color: var(--accent-green);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--text-secondary);
+        }
+
+        .empty-state .icon {
+            font-size: 2.5rem;
+            margin-bottom: 0.8rem;
+        }
+
+        @media (max-width: 640px) {
+            .container {
+                padding: 1rem;
+            }
+
+            header h1 {
+                font-size: 1.5rem;
+            }
+
+            .section {
+                padding: 1.2rem;
+            }
+
+            .rasters-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .upload-row,
+            .delta-form {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+
+        <header>
+            <h1>🌿 Spatio-Temporal Hotspot Indexing</h1>
+            <p>Monitoramento de Perda de Vegetação Nativa no Cerrado · Processamento via PostGIS</p>
+        </header>
+
+        <!-- Flash messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div style="margin-bottom: 1.5rem;">
+            {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        <!-- ==================== UPLOAD ==================== -->
+        <section class="section">
+            <h2>🚀 Upload de Raster Temporal</h2>
+            <form action="/upload" method="POST" enctype="multipart/form-data">
+                <div class="upload-row">
+                    <div class="form-group" style="flex:2">
+                        <label>Imagem Raster (GeoTIFF, PNG, JPEG)</label>
+                        <input type="file" name="imagem" accept=".tif,.tiff,.png,.jpg,.jpeg" required>
+                    </div>
+                    <div class="form-group" style="flex:0.7">
+                        <label>Ano</label>
+                        <input type="number" name="ano" placeholder="2020" min="1985" max="2030" required>
+                    </div>
+                    <div>
+                        <button type="submit" class="btn btn-primary">⬆️ Enviar</button>
+                    </div>
+                </div>
+            </form>
+        </section>
+
+        <!-- ==================== DETECÇÃO DE MUDANÇA ==================== -->
+        {% if rasters|length >= 2 %}
+        <section class="section">
+            <h2>🔥 Detectar Mudança (Delta)</h2>
+            <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem;">
+                Selecione dois rasters de anos diferentes. O PostGIS calculará o delta via
+                <code style="color: var(--accent-green);">ST_MapAlgebra</code> e extrairá os polígonos de mudança.
+            </p>
+            <form action="/processar-delta" method="POST">
+                <div class="delta-form">
+                    <div class="form-group">
+                        <label>Raster T1 (antes)</label>
+                        <select name="raster_t1_id" required>
+                            <option value="">Selecione...</option>
+                            {% for r in rasters %}
+                            <option value="{{ r.id }}">{{ r.nome }} ({{ r.ano }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="delta-arrow">→</div>
+                    <div class="form-group">
+                        <label>Raster T2 (depois)</label>
+                        <select name="raster_t2_id" required>
+                            <option value="">Selecione...</option>
+                            {% for r in rasters %}
+                            <option value="{{ r.id }}">{{ r.nome }} ({{ r.ano }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <button type="submit" class="btn btn-danger">🔥 Detectar Mudança</button>
+                    </div>
+                </div>
+            </form>
+        </section>
+        {% endif %}
+
+        <!-- ==================== RESUMO DE HOTSPOTS ==================== -->
+        {% if hotspots_resumo %}
+        <section class="section">
+            <h2>📊 Hotspots Detectados</h2>
+
+            <div class="resumo-grid">
+                {% for h in hotspots_resumo %}
+                <div class="resumo-box">
+                    <div class="resumo-value">{{ h.total_hotspots }}</div>
+                    <div class="resumo-label">
+                        Mudanças {{ h.ano_inicio }} → {{ h.ano_fim }}
+                        <br>{{ "%.2f"|format(h.area_total_ha) }} ha
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem;">
+                <button class="btn btn-sm btn-outline" onclick="carregarEstatisticas()">
+                    📈 Ver Estatísticas
+                </button>
+                <button class="btn btn-sm btn-outline" onclick="carregarHotspots()">
+                    🗺️ Ver Todos os Hotspots
+                </button>
+                <a href="/hotspots/geojson" target="_blank" class="btn btn-sm btn-outline">
+                    📥 Exportar GeoJSON
+                </a>
+                <button class="btn btn-sm btn-outline" onclick="carregarHotspots(315)">
+                    🌳→🐄 Floresta→Pastagem (315)
+                </button>
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- ==================== RASTERS ARMAZENADOS ==================== -->
+        <section class="section">
+            <h2>🗂️ Rasters Temporais</h2>
+
+            {% if rasters %}
+            <div class="rasters-grid">
+                {% for r in rasters %}
+                <div class="raster-card">
+                    <img class="raster-thumb" src="/raster/{{ r.id }}/thumbnail" alt="{{ r.nome }}" loading="lazy">
+                    <div class="raster-body">
+                        <div class="raster-title">{{ r.nome }}</div>
+                        <div class="badges">
+                            <span class="badge badge-year">📅 {{ r.ano }}</span>
+                            <span class="badge">📐 {{ r.largura }}×{{ r.altura }}</span>
+                            <span class="badge">🎨 {{ r.bandas }} banda{{ 's' if r.bandas != 1 }}</span>
+                            <span class="badge">📄 {{ r.formato }}</span>
+                        </div>
+                        <div class="raster-actions">
+                            <button class="btn btn-sm btn-process-single"
+                                onclick="processarRaster({{ r.id }}, '{{ r.nome }}')">
+                                ⚙️ Info
+                            </button>
+                            <form action="/excluir/{{ r.id }}" method="POST" style="flex:1"
+                                onsubmit="return confirm('Excluir este raster e seus hotspots?')">
+                                <button type="submit" class="btn btn-sm btn-delete" style="width:100%">
+                                    🗑️
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <p>Nenhum raster enviado. Faça o upload de dois rasters de anos diferentes para começar!</p>
+            </div>
+            {% endif %}
+        </section>
+    </div>
+
+    <!-- MODAL -->
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal">
+            <h3 id="modalTitle">Resultados</h3>
+            <div id="modalContent">
+                <p><span class="spinner"></span> Carregando...</p>
+            </div>
+            <button class="btn btn-primary" onclick="fecharModal()"
+                style="margin-top:1rem; width:100%; justify-content:center;">
+                Fechar
+            </button>
+        </div>
+    </div>
+
+    <script>
+        function abrirModal(title, contentHTML) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalContent').innerHTML = contentHTML;
+            document.getElementById('modalOverlay').classList.add('active');
+        }
+
+        function fecharModal() {
+            document.getElementById('modalOverlay').classList.remove('active');
+        }
+
+        document.getElementById('modalOverlay').addEventListener('click', e => {
+            if (e.target === e.currentTarget) fecharModal();
+        });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharModal(); });
+
+        // Info de um raster individual
+        function processarRaster(id, nome) {
+            abrirModal(`⚙️ ${nome}`, '<p><span class="spinner"></span> Consultando PostGIS...</p>');
+
+            fetch(`/processar/${id}`, { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.erro) {
+                        document.getElementById('modalContent').innerHTML =
+                            `<div class="result-block"><h4>Erro</h4><pre>${data.erro}</pre></div>`;
+                        return;
+                    }
+                    let html = '';
+                    if (data.resumo) html += `<div class="result-block"><h4>📋 ST_Summary</h4><pre>${data.resumo}</pre></div>`;
+                    if (data.dimensoes) {
+                        const d = data.dimensoes;
+                        html += `<div class="result-block"><h4>📐 Dimensões</h4><pre>Largura: ${d.largura}px\nAltura: ${d.altura}px\nBandas: ${d.bandas}</pre></div>`;
+                    }
+                    if (data.estatisticas_banda_1) {
+                        const s = data.estatisticas_banda_1;
+                        html += `<div class="result-block"><h4>📊 Estatísticas Banda 1</h4><pre>Contagem: ${s.count}\nMédia: ${Number(s.mean).toFixed(4)}\nDesvio: ${Number(s.stddev).toFixed(4)}\nMín: ${s.min}  Máx: ${s.max}</pre></div>`;
+                    }
+                    if (data.banda_1) {
+                        const b = data.banda_1;
+                        html += `<div class="result-block"><h4>🎨 Banda 1</h4><pre>Pixel Type: ${b.pixel_type}\nNoData: ${b.nodata ?? 'N/A'}</pre></div>`;
+                    }
+                    if (data.envelope_geojson) {
+                        html += `<div class="result-block"><h4>🗺️ Envelope GeoJSON</h4><pre>${JSON.stringify(data.envelope_geojson, null, 2)}</pre></div>`;
+                    }
+                    document.getElementById('modalContent').innerHTML = html || '<p>Sem dados.</p>';
+                })
+                .catch(err => {
+                    document.getElementById('modalContent').innerHTML =
+                        `<div class="result-block"><h4>Erro</h4><pre>${err.message}</pre></div>`;
+                });
+        }
+
+        // Estatísticas de perda
+        function carregarEstatisticas() {
+            abrirModal('📈 Estatísticas de Transição', '<p><span class="spinner"></span> Consultando fn_estatisticas_perda...</p>');
+
+            fetch('/estatisticas')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.length) {
+                        document.getElementById('modalContent').innerHTML = '<p>Nenhuma estatística disponível.</p>';
+                        return;
+                    }
+                    let html = '<table class="hotspot-table"><thead><tr><th>Transição</th><th>Origem → Destino</th><th>Hotspots</th><th>Área (ha)</th></tr></thead><tbody>';
+                    data.forEach(r => {
+                        html += `<tr>
+                            <td><strong>${r.codigo_transicao}</strong></td>
+                            <td>${r.nome_origem} <span class="transition-arrow">→</span> ${r.nome_destino}</td>
+                            <td>${r.total_hotspots}</td>
+                            <td>${Number(r.area_total_ha).toFixed(2)}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table>';
+                    document.getElementById('modalContent').innerHTML = html;
+                });
+        }
+
+        // Listar hotspots com filtro opcional
+        function carregarHotspots(transicao) {
+            const url = transicao ? `/hotspots?transicao=${transicao}` : '/hotspots';
+            const titulo = transicao ? `🔥 Hotspots — Transição ${transicao}` : '🔥 Todos os Hotspots';
+            abrirModal(titulo, '<p><span class="spinner"></span> Consultando hotspot_deltas...</p>');
+
+            fetch(url)
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.length) {
+                        document.getElementById('modalContent').innerHTML = '<p>Nenhum hotspot encontrado.</p>';
+                        return;
+                    }
+                    let html = `<p style="margin-bottom:0.8rem; color:var(--text-secondary); font-size:0.85rem;">${data.length} hotspot(s) encontrado(s)</p>`;
+                    html += '<table class="hotspot-table"><thead><tr><th>Período</th><th>Transição</th><th>Área (ha)</th></tr></thead><tbody>';
+                    data.forEach(r => {
+                        html += `<tr>
+                            <td>${r.ano_inicio} → ${r.ano_fim}</td>
+                            <td>
+                                <span class="color-dot" style="background:${r.cor_origem || '#ccc'}"></span>${r.nome_origem}
+                                <span class="transition-arrow">→</span>
+                                <span class="color-dot" style="background:${r.cor_destino || '#ccc'}"></span>${r.nome_destino}
+                            </td>
+                            <td>${Number(r.area_ha).toFixed(4)}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table>';
+                    document.getElementById('modalContent').innerHTML = html;
+                });
+        }
+    </script>
+
+</body>
+
+</html>
