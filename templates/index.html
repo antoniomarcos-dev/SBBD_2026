@@ -560,6 +560,140 @@
                 flex-direction: column;
             }
         }
+
+        /* ===== Progress Modal ===== */
+        .progress-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(12px);
+            z-index: 200;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem;
+        }
+
+        .progress-overlay.active {
+            display: flex;
+        }
+
+        .progress-modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-xl);
+            max-width: 480px;
+            width: 100%;
+            padding: 2.5rem 2rem;
+            text-align: center;
+            animation: modalIn 0.3s ease;
+        }
+
+        .progress-icon {
+            font-size: 3rem;
+            margin-bottom: 1.2rem;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+
+            50% {
+                transform: scale(1.15);
+                opacity: 0.7;
+            }
+        }
+
+        .progress-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1.5rem;
+        }
+
+        .progress-bar-track {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 100px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+            position: relative;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: var(--accent-gradient);
+            border-radius: 100px;
+            transition: width 0.4s ease;
+            position: relative;
+        }
+
+        .progress-bar-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg,
+                    transparent,
+                    rgba(255, 255, 255, 0.3),
+                    transparent);
+            animation: shimmer 1.5s ease-in-out infinite;
+        }
+
+        @keyframes shimmer {
+            0% {
+                transform: translateX(-100%);
+            }
+
+            100% {
+                transform: translateX(100%);
+            }
+        }
+
+        .progress-percent {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--accent-green);
+            margin-bottom: 0.6rem;
+        }
+
+        .progress-status {
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+            min-height: 1.4em;
+            transition: opacity 0.3s ease;
+        }
+
+        .progress-status.fade {
+            opacity: 0;
+        }
+
+        .progress-done-icon {
+            font-size: 3rem;
+            margin-bottom: 0.8rem;
+        }
+
+        .progress-done-msg {
+            font-size: 1rem;
+            font-weight: 500;
+        }
+
+        .progress-done-msg.success {
+            color: #6ee7b7;
+        }
+
+        .progress-done-msg.error {
+            color: #fca5a5;
+        }
     </style>
 </head>
 
@@ -586,7 +720,7 @@
         <!-- ==================== UPLOAD ==================== -->
         <section class="section">
             <h2>🚀 Upload de Raster Temporal</h2>
-            <form action="/upload" method="POST" enctype="multipart/form-data">
+            <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
                 <div class="upload-row">
                     <div class="form-group" style="flex:2">
                         <label>Imagem Raster (GeoTIFF, PNG, JPEG)</label>
@@ -716,6 +850,19 @@
         </section>
     </div>
 
+    <!-- PROGRESS MODAL -->
+    <div class="progress-overlay" id="progressOverlay">
+        <div class="progress-modal">
+            <div class="progress-icon" id="progressIcon">🛰️</div>
+            <div class="progress-title" id="progressTitle">Enviando Raster</div>
+            <div class="progress-bar-track">
+                <div class="progress-bar-fill" id="progressBarFill"></div>
+            </div>
+            <div class="progress-percent" id="progressPercent">0%</div>
+            <div class="progress-status" id="progressStatus">Preparando envio...</div>
+        </div>
+    </div>
+
     <!-- MODAL -->
     <div class="modal-overlay" id="modalOverlay">
         <div class="modal">
@@ -731,6 +878,128 @@
     </div>
 
     <script>
+        /* ===== Progress Modal Logic ===== */
+        (function () {
+            const form = document.getElementById('uploadForm');
+            const overlay = document.getElementById('progressOverlay');
+            const barFill = document.getElementById('progressBarFill');
+            const percentEl = document.getElementById('progressPercent');
+            const statusEl = document.getElementById('progressStatus');
+            const iconEl = document.getElementById('progressIcon');
+            const titleEl = document.getElementById('progressTitle');
+
+            const FRASES = [
+                { pct: 0, txt: 'Preparando envio...', icon: '📦' },
+                { pct: 10, txt: 'Carregando imagem...', icon: '🖼️' },
+                { pct: 25, txt: 'Enviando dados ao servidor...', icon: '🚀' },
+                { pct: 45, txt: 'Transferindo arquivo...', icon: '📡' },
+                { pct: 65, txt: 'Processando metadados...', icon: '🔍' },
+                { pct: 72, txt: 'Armazenando no PostGIS...', icon: '🗄️' },
+                { pct: 80, txt: 'Cruzando informações...', icon: '🔗' },
+                { pct: 88, txt: 'Gerando thumbnail...', icon: '🎨' },
+                { pct: 94, txt: 'Finalizando processamento...', icon: '⏳' },
+            ];
+
+            function setProgress(pct) {
+                pct = Math.min(100, Math.max(0, pct));
+                barFill.style.width = pct + '%';
+                percentEl.textContent = Math.round(pct) + '%';
+
+                // pick the right phrase
+                let frase = FRASES[0];
+                for (const f of FRASES) {
+                    if (pct >= f.pct) frase = f;
+                }
+                if (statusEl.textContent !== frase.txt) {
+                    statusEl.classList.add('fade');
+                    setTimeout(() => {
+                        statusEl.textContent = frase.txt;
+                        iconEl.textContent = frase.icon;
+                        statusEl.classList.remove('fade');
+                    }, 300);
+                }
+            }
+
+            function showDone(ok, msg) {
+                iconEl.style.animation = 'none';
+                iconEl.textContent = ok ? '✅' : '❌';
+                titleEl.textContent = ok ? 'Concluído!' : 'Erro';
+                barFill.style.width = '100%';
+                percentEl.textContent = '100%';
+                statusEl.classList.add('fade');
+                setTimeout(() => {
+                    statusEl.textContent = msg;
+                    statusEl.className = 'progress-done-msg ' + (ok ? 'success' : 'error');
+                }, 300);
+            }
+
+            if (form) {
+                form.addEventListener('submit', function (e) {
+                    e.preventDefault();
+
+                    // Reset UI
+                    barFill.style.width = '0%';
+                    percentEl.textContent = '0%';
+                    statusEl.className = 'progress-status';
+                    statusEl.textContent = 'Preparando envio...';
+                    iconEl.textContent = '🛰️';
+                    iconEl.style.animation = '';
+                    titleEl.textContent = 'Enviando Raster';
+                    overlay.classList.add('active');
+
+                    const formData = new FormData(form);
+                    const xhr = new XMLHttpRequest();
+
+                    // Phase 1: real upload progress (0 – 70%)
+                    xhr.upload.addEventListener('progress', function (ev) {
+                        if (ev.lengthComputable) {
+                            const realPct = (ev.loaded / ev.total) * 70;
+                            setProgress(realPct);
+                        }
+                    });
+
+                    // Phase 2: server processing simulation (70 – 98%)
+                    let simInterval = null;
+                    xhr.upload.addEventListener('load', function () {
+                        let simPct = 70;
+                        simInterval = setInterval(() => {
+                            simPct += Math.random() * 3 + 0.5;
+                            if (simPct > 98) simPct = 98;
+                            setProgress(simPct);
+                        }, 600);
+                    });
+
+                    xhr.addEventListener('load', function () {
+                        if (simInterval) clearInterval(simInterval);
+                        setProgress(100);
+
+                        try {
+                            const data = JSON.parse(xhr.responseText);
+                            showDone(data.ok, data.msg);
+                        } catch {
+                            showDone(xhr.status >= 200 && xhr.status < 300,
+                                xhr.status >= 200 && xhr.status < 300
+                                    ? 'Upload concluído!'
+                                    : 'Ocorreu um erro no servidor.');
+                        }
+
+                        setTimeout(() => location.reload(), 1800);
+                    });
+
+                    xhr.addEventListener('error', function () {
+                        if (simInterval) clearInterval(simInterval);
+                        showDone(false, 'Falha na conexão com o servidor.');
+                        setTimeout(() => location.reload(), 2500);
+                    });
+
+                    xhr.open('POST', form.action);
+                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                    xhr.send(formData);
+                });
+            }
+        })();
+
+        /* ===== Existing Modal Logic ===== */
         function abrirModal(title, contentHTML) {
             document.getElementById('modalTitle').textContent = title;
             document.getElementById('modalContent').innerHTML = contentHTML;

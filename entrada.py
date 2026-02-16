@@ -147,24 +147,28 @@ def index():
 # ---------------------------------------------------------------------------
 @app.route("/upload", methods=["POST"])
 def upload():
-    if "imagem" not in request.files:
-        flash("Nenhum arquivo selecionado.", "error")
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+    def _fail(msg):
+        if is_ajax:
+            return jsonify({"ok": False, "msg": msg})
+        flash(msg, "error")
         return redirect(url_for("index"))
+
+    if "imagem" not in request.files:
+        return _fail("Nenhum arquivo selecionado.")
 
     file = request.files["imagem"]
     ano = request.form.get("ano", "").strip()
 
     if file.filename == "":
-        flash("Nenhum arquivo selecionado.", "error")
-        return redirect(url_for("index"))
+        return _fail("Nenhum arquivo selecionado.")
 
     if not ano or not ano.isdigit():
-        flash("Informe o ano do raster (ex: 2020).", "error")
-        return redirect(url_for("index"))
+        return _fail("Informe o ano do raster (ex: 2020).")
 
     if not allowed_file(file.filename):
-        flash("Formato não suportado. Use TIFF, PNG ou JPEG.", "error")
-        return redirect(url_for("index"))
+        return _fail("Formato não suportado. Use TIFF, PNG ou JPEG.")
 
     ano = int(ano)
     filename = file.filename
@@ -204,10 +208,16 @@ def upload():
         cur.close()
         conn.close()
 
-        flash(f"Raster '{filename}' (ano {ano}) enviado com sucesso! ID: {new_id}", "success")
+        success_msg = f"Raster '{filename}' (ano {ano}) enviado com sucesso! ID: {new_id}"
+        if is_ajax:
+            return jsonify({"ok": True, "msg": success_msg})
+        flash(success_msg, "success")
 
     except Exception as e:
-        flash(f"Erro ao processar: {e}", "error")
+        err_msg = f"Erro ao processar: {e}"
+        if is_ajax:
+            return jsonify({"ok": False, "msg": err_msg})
+        flash(err_msg, "error")
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
