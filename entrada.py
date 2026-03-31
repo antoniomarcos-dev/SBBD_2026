@@ -625,7 +625,7 @@ def hotspots_geojson_stream():
 
     def generate():
         conn = psycopg2.connect(**DB_CONFIG)
-        conn.autocommit = True
+        conn.autocommit = False
 
         # Server-side cursor: PG envia linhas em chunks sem materializar tudo
         cur = conn.cursor(name='geojson_stream_cursor')
