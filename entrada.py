@@ -499,40 +499,77 @@ def thumbnail(raster_id: int):
 # ---------------------------------------------------------------------------
 # Rotas — Detectar Mudança (Delta via PostGIS)
 # ---------------------------------------------------------------------------
-@app.route("/processar-delta", methods=["POST"])
-def processar_delta():
-    """Chama fn_extrair_hotspots no PostGIS para os dois rasters selecionados."""
-    t1_id = request.form.get("raster_t1_id", type=int)
-    t2_id = request.form.get("raster_t2_id", type=int)
+@app.route("/processar-delta-multi", methods=["POST"])
+def processar_delta_multi():
+    """Chama fn_extrair_hotspots no PostGIS para sequências cronológicas de rasters baseados em anos [Streaming SSE]."""
+    ano_inicio = request.form.get("ano_inicio", type=int)
+    ano_fim = request.form.get("ano_fim", type=int)
 
-    if not t1_id or not t2_id:
-        flash("Selecione dois rasters para comparar.", "error")
-        return redirect(url_for("index"))
+    if not ano_inicio or not ano_fim or ano_inicio >= ano_fim:
+        return Response('data: {"erro": "Período inválido: o ano final deve ser maior que o ano inicial."}\n\n', mimetype='text/event-stream')
 
-    if t1_id == t2_id:
-        flash("Selecione dois rasters diferentes.", "error")
-        return redirect(url_for("index"))
-
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT fn_extrair_hotspots(%s, %s)", (t1_id, t2_id))
-        count = cur.fetchone()[0]
-        cur.close()
-        conn.close()
-
-        # Invalida cache após novos hotspots
+    def generate():
+        import json
         try:
-            cache.clear()
-        except Exception:
-            pass
+            conn = get_db()
+            cur = conn.cursor()
+            
+            cur.execute("""
+                SELECT id, ano FROM rasters_temporais 
+                WHERE ano >= %s AND ano <= %s 
+                ORDER BY ano ASC, data_upload ASC
+            """, (ano_inicio, ano_fim))
+            ordered_rasters = cur.fetchall()
+            
+            if len(ordered_rasters) < 2:
+                yield f'data: {json.dumps({"erro": "São necessários pelo menos 2 rasters (de anos diferentes) no período selecionado."})}\n\n'
+                cur.close()
+                conn.close()
+                return
+            
+            total_pairs = len(ordered_rasters) - 1
+            total_count = 0
+            
+            yield f'data: {json.dumps({"msg": "Iniciando pipeline de processamento...", "pct": 5})}\n\n'
+            
+            for i in range(total_pairs):
+                t1_id = ordered_rasters[i][0]
+                t2_id = ordered_rasters[i+1][0]
+                y1 = ordered_rasters[i][1]
+                y2 = ordered_rasters[i+1][1]
+                
+                if t1_id == t2_id: continue
+                
+                # Progresso no Terminal
+                msg_term = f"[Delta Pipeline] Periodo {i+1}/{total_pairs} | Analisando {y1} -> {y2}..."
+                print(msg_term, flush=True)
+                
+                # Progresso na TELA (UI)
+                pct = 5 + int(90 * (i / total_pairs))
+                yield f'data: {json.dumps({"msg": f"Analisando mudança {y1} → {y2}...", "pct": pct})}\n\n'
+                
+                cur.execute("SELECT fn_extrair_hotspots(%s, %s)", (t1_id, t2_id))
+                count = cur.fetchone()[0]
+                total_count += count
+                
+                print(f"[Delta Pipeline]   > Concluido_ {y1}->{y2}: {count} hotspots injetados.", flush=True)
+                
+            cur.close()
+            conn.close()
 
-        flash(f"Detecção concluída! {count} hotspot(s) de mudança encontrado(s).", "success")
+            try:
+                cache.clear()
+            except Exception:
+                pass
 
-    except Exception as e:
-        flash(f"Erro no processamento: {e}", "error")
+            print(f"[Delta Pipeline] Processamento geral finalizado. {total_count} deltas criados.", flush=True)
+            yield f'data: {json.dumps({"msg": f"Concluído! {total_count} hotspot(s) extraído(s).", "pct": 100, "done": True})}\n\n'
 
-    return redirect(url_for("index"))
+        except Exception as e:
+            print(f"[Delta Pipeline] Erro: {e}", flush=True)
+            yield f'data: {json.dumps({"erro": f"Erro no banco de dados: {e}"})}\n\n'
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +707,7 @@ def hotspots_geojson_stream():
         cur.execute(query, params)
 
         # Cabeçalho do FeatureCollection
-        col_names = [desc[0] for desc in cur.description]
+        col_names = ['id', 'ano_inicio', 'ano_fim', 'classe_origem', 'classe_destino', 'codigo_transicao', 'area_ha', 'nome_origem', 'nome_destino', 'geom_json']
         geom_idx = col_names.index('geom_json')
 
         yield '{"type":"FeatureCollection","features":['

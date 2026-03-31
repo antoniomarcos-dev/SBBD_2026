@@ -773,34 +773,27 @@
         <section class="section">
             <h2>🔥 Detectar Mudança (Delta)</h2>
             <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem;">
-                Selecione dois rasters de anos diferentes. O PostGIS calculará o delta via
+                Selecione os rasters para processar cronologicamente em sequência. O PostGIS calculará os deltas via
                 <code style="color: var(--accent-green);">ST_MapAlgebra</code> e extrairá os polígonos de mudança.
+                (Pressione Ctrl ou Shift para selecionar múltiplos).
             </p>
-            <form action="/processar-delta" method="POST">
-                <div class="delta-form">
-                    <div class="form-group">
-                        <label>Raster T1 (antes)</label>
-                        <select name="raster_t1_id" required>
-                            <option value="">Selecione...</option>
-                            {% for r in rasters %}
-                            <option value="{{ r.id }}">{{ r.nome }} ({{ r.ano }})</option>
-                            {% endfor %}
-                        </select>
+            <form id="deltaMultiForm" action="/processar-delta-multi" method="POST">
+                <div class="delta-form" style="display: flex; gap: 1rem; align-items: flex-end;">
+                    <div class="form-group" style="flex: 1;">
+                        <label>Ano Inicial:</label>
+                        <input type="number" name="ano_inicio" min="1980" max="2040" placeholder="Ex: 2000" required style="width: 100%;">
                     </div>
-                    <div class="delta-arrow">→</div>
-                    <div class="form-group">
-                        <label>Raster T2 (depois)</label>
-                        <select name="raster_t2_id" required>
-                            <option value="">Selecione...</option>
-                            {% for r in rasters %}
-                            <option value="{{ r.id }}">{{ r.nome }} ({{ r.ano }})</option>
-                            {% endfor %}
-                        </select>
+                    <div class="form-group" style="flex: 1;">
+                        <label>Ano Final:</label>
+                        <input type="number" name="ano_fim" min="1980" max="2040" placeholder="Ex: 2024" required style="width: 100%;">
                     </div>
-                    <div>
-                        <button type="submit" class="btn btn-danger">🔥 Detectar Mudança</button>
+                    <div style="flex: 1;">
+                        <button type="submit" class="btn btn-danger" style="width: 100%; height: 42px;">🔥 Processar Série Temporal</button>
                     </div>
                 </div>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.8rem;">
+                    O sistema buscará e emparelhará cronologicamente <strong>todos os rasters</strong> mapeados entre esses anos.
+                </p>
             </form>
         </section>
         {% endif %}
@@ -1061,6 +1054,74 @@
                     xhr.open('POST', form.action);
                     xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
                     xhr.send(formData);
+                });
+            }
+
+            const deltaMultiForm = document.getElementById('deltaMultiForm');
+            if (deltaMultiForm) {
+                deltaMultiForm.addEventListener('submit', async function(e) {
+                    e.preventDefault();
+                    
+                    barFill.style.width = '0%';
+                    percentEl.textContent = '0%';
+                    statusEl.className = 'progress-status';
+                    statusEl.textContent = 'Iniciando processamento...';
+                    iconEl.textContent = '🔥';
+                    iconEl.style.animation = 'pulse 2s ease-in-out infinite';
+                    titleEl.textContent = 'Gerando Hotspots';
+                    overlay.classList.add('active');
+                    
+                    const formData = new FormData(this);
+                    try {
+                        const res = await fetch(this.action, { method: 'POST', body: formData });
+                        const reader = res.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buffer = '';
+                        
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            
+                            buffer += decoder.decode(value, { stream: true });
+                            let parts = buffer.split('\n\n');
+                            buffer = parts.pop(); 
+                            
+                            for (let part of parts) {
+                                if (part.startsWith('data: ')) {
+                                    const dataPayload = part.substring(6);
+                                    if (!dataPayload.trim()) continue;
+                                    
+                                    const data = JSON.parse(dataPayload);
+                                    if (data.erro) {
+                                        showDone(false, data.erro);
+                                        setTimeout(() => fecharModal(), 3000);
+                                        return;
+                                    }
+                                    
+                                    if (data.pct) {
+                                        barFill.style.width = data.pct + '%';
+                                        percentEl.textContent = Math.round(data.pct) + '%';
+                                    }
+                                    
+                                    if (data.msg) {
+                                        statusEl.classList.add('fade');
+                                        setTimeout(() => {
+                                            statusEl.textContent = data.msg;
+                                            statusEl.classList.remove('fade');
+                                        }, 150);
+                                    }
+                                    
+                                    if (data.done) {
+                                        showDone(true, data.msg || 'Completo!');
+                                        setTimeout(() => location.reload(), 2000);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        showDone(false, 'Falha na conexão de stream com o servidor.');
+                        setTimeout(() => overlay.classList.remove('active'), 2500);
+                    }
                 });
             }
         })();
