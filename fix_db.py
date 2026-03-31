@@ -72,7 +72,9 @@ BEGIN
                 SELECT ST_DumpAsPolygons(
                     ST_MapAlgebra(
                         r.rast1, 1,
-                        ST_Resample(r.rast2, r.rast1, 'NearestNeighbor'), 1,
+                        CASE WHEN ST_SameAlignment(r.rast1, r.rast2) THEN r.rast2
+                             ELSE ST_Resample(r.rast2, r.rast1, 'NearestNeighbor') 
+                        END, 1,
                         '[rast1.val]*100+[rast2.val]',
                         '32BF', 'INTERSECTION',
                         '[rast1.val]*100', '[rast2.val]', NULL
@@ -95,6 +97,10 @@ print("Connecting to DB...")
 conn = psycopg2.connect(**DB_CONFIG)
 conn.autocommit = True
 cur = conn.cursor()
-print("Executing CREATE OR REPLACE FUNCTION...")
+
+print("Killing active stuck processes...")
+cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'active' AND query ILIKE '%fn_extrair_hotspots%' AND pid <> pg_backend_pid();")
+
+print("Executing CREATE OR REPLACE FUNCTION limitando overhead do ST_Resample...")
 cur.execute(func_sql)
-print("Fix applied.")
+print("Performance Fix applied.")

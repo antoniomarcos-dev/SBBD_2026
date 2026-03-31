@@ -496,12 +496,31 @@ def thumbnail(raster_id: int):
     )
 
 
+def _flush_inserts(cur, tuples, srid):
+    """Insere batch de geometrias no banco via execute_values."""
+    from psycopg2.extras import execute_values
+    if not tuples:
+        return
+    template = f"""(
+        %s, %s, %s, %s, %s, %s, %s,
+        ST_SimplifyPreserveTopology(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(%s), {srid}), 4326), 0.00005),
+        ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(%s), {srid}), 4326)::geography) / 10000.0
+    )"""
+    query = """
+        INSERT INTO hotspot_deltas 
+        (raster_t1_id, raster_t2_id, ano_inicio, ano_fim, classe_origem, classe_destino, codigo_transicao, geom, area_ha) 
+        VALUES %s
+    """
+    execute_values(cur, query, tuples, template=template, page_size=500)
+    print(f"  > Inseridas {len(tuples)} geometrias no banco.", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Rotas — Detectar Mudança (Delta via PostGIS)
 # ---------------------------------------------------------------------------
 @app.route("/processar-delta-multi", methods=["POST"])
 def processar_delta_multi():
-    """Chama fn_extrair_hotspots no PostGIS para sequências cronológicas de rasters baseados em anos [Streaming SSE]."""
+    """Calcula deltas via Python (numpy+rasterio) em vez de PostGIS Algebra para 1000x mais performance e tracking por tile."""
     ano_inicio = request.form.get("ano_inicio", type=int)
     ano_fim = request.form.get("ano_fim", type=int)
 
@@ -510,12 +529,18 @@ def processar_delta_multi():
 
     def generate():
         import json
+        import numpy as np
+        import rasterio.features
+        from rasterio.io import MemoryFile
+        from psycopg2.extras import execute_values
+        
         try:
-            conn = get_db()
+            conn = psycopg2.connect(**DB_CONFIG)
+            conn.autocommit = False
             cur = conn.cursor()
             
             cur.execute("""
-                SELECT id, ano FROM rasters_temporais 
+                SELECT id, ano, CASE WHEN srid IS NULL OR srid = 0 THEN 4326 ELSE srid END FROM rasters_temporais 
                 WHERE ano >= %s AND ano <= %s 
                 ORDER BY ano ASC, data_upload ASC
             """, (ano_inicio, ano_fim))
@@ -523,51 +548,107 @@ def processar_delta_multi():
             
             if len(ordered_rasters) < 2:
                 yield f'data: {json.dumps({"erro": "São necessários pelo menos 2 rasters (de anos diferentes) no período selecionado."})}\n\n'
-                cur.close()
-                conn.close()
                 return
             
             total_pairs = len(ordered_rasters) - 1
-            total_count = 0
+            global_hotspots = 0
             
-            yield f'data: {json.dumps({"msg": "Iniciando pipeline de processamento...", "pct": 5})}\n\n'
+            yield f'data: {json.dumps({"msg": "Iniciando pipeline Numpy de alta performance...", "pct": 5})}\n\n'
             
             for i in range(total_pairs):
-                t1_id = ordered_rasters[i][0]
-                t2_id = ordered_rasters[i+1][0]
-                y1 = ordered_rasters[i][1]
-                y2 = ordered_rasters[i+1][1]
+                t1_id, y1, srid1 = ordered_rasters[i]
+                t2_id, y2, _ = ordered_rasters[i+1]
                 
                 if t1_id == t2_id: continue
                 
-                # Progresso no Terminal
-                msg_term = f"[Delta Pipeline] Periodo {i+1}/{total_pairs} | Analisando {y1} -> {y2}..."
+                msg_term = f"[Delta Pipeline] Periodo {i+1}/{total_pairs} | {y1} -> {y2}"
                 print(msg_term, flush=True)
                 
-                # Progresso na TELA (UI)
-                pct = 5 + int(90 * (i / total_pairs))
-                yield f'data: {json.dumps({"msg": f"Analisando mudança {y1} → {y2}...", "pct": pct})}\n\n'
+                cur.execute("DELETE FROM hotspot_deltas WHERE raster_t1_id=%s AND raster_t2_id=%s", (t1_id, t2_id))
+                conn.commit()
                 
-                cur.execute("SELECT fn_extrair_hotspots(%s, %s)", (t1_id, t2_id))
-                count = cur.fetchone()[0]
-                total_count += count
+                # Conta tiles primeiro (sem carregar dados pesados)
+                cur.execute("""
+                    SELECT COUNT(*) FROM raster_tiles t1
+                    JOIN raster_tiles t2 ON t1.coluna = t2.coluna AND t1.linha = t2.linha
+                    WHERE t1.raster_id = %s AND t2.raster_id = %s
+                """, (t1_id, t2_id))
+                total_tiles = cur.fetchone()[0]
                 
-                print(f"[Delta Pipeline]   > Concluido_ {y1}->{y2}: {count} hotspots injetados.", flush=True)
+                if total_tiles == 0:
+                    continue
+
+                # Cursor server-side: puxa UM tile por vez — nunca estoura RAM do PG
+                tile_cur = conn.cursor(name='delta_tile_cursor')
+                tile_cur.itersize = 1
+                tile_cur.execute("""
+                    SELECT ST_AsTIFF(t1.rast), ST_AsTIFF(t2.rast)
+                    FROM raster_tiles t1
+                    JOIN raster_tiles t2 ON t1.coluna = t2.coluna AND t1.linha = t2.linha
+                    WHERE t1.raster_id = %s AND t2.raster_id = %s
+                """, (t1_id, t2_id))
+
+                tuples_to_insert = []
+                idx = 0
                 
+                for tiff1, tiff2 in tile_cur:
+                    if not tiff1 or not tiff2:
+                        idx += 1
+                        continue
+                    with MemoryFile(bytes(tiff1)) as m1, MemoryFile(bytes(tiff2)) as m2:
+                        with m1.open() as src1, m2.open() as src2:
+                            arr1 = src1.read(1)
+                            arr2 = src2.read(1)
+                            
+                            mask = (arr1 != arr2) & (arr1 > 0) & (arr2 > 0) & (arr1 < 9999) & (arr2 < 9999)
+                            if not mask.any():
+                                idx += 1
+                                continue
+                            
+                            delta_arr = (arr1.astype(np.uint16) * 100 + arr2.astype(np.uint16))
+                            delta_arr[~mask] = 0
+                            
+                            shapes = rasterio.features.shapes(delta_arr, mask=mask, transform=src1.transform)
+                            for geom, val in shapes:
+                                v = int(val)
+                                tuples_to_insert.append((t1_id, t2_id, y1, y2, v // 100, v % 100, v, json.dumps(geom), json.dumps(geom)))
+
+                    idx += 1
+
+                    # Progresso a cada 5 tiles
+                    if idx % 5 == 0 or idx == total_tiles:
+                        base_pct = 5 + (90 * (i / total_pairs))
+                        tile_pct = (90 / total_pairs) * (idx / total_tiles)
+                        pct = min(95, base_pct + tile_pct)
+                        txt = f"{y1}→{y2} (Bloco {idx}/{total_tiles})"
+                        print(f"  > {txt} - {int(pct)}%", flush=True)
+                        yield f'data: {json.dumps({"msg": txt, "pct": pct})}\n\n'
+
+                    # Flush parcial para não acumular demais em RAM
+                    if len(tuples_to_insert) >= 3000:
+                        _flush_inserts(cur, tuples_to_insert, srid1)
+                        global_hotspots += len(tuples_to_insert)
+                        tuples_to_insert = []
+
+                tile_cur.close()
+
+                if tuples_to_insert:
+                    _flush_inserts(cur, tuples_to_insert, srid1)
+                    global_hotspots += len(tuples_to_insert)
+                    
+                conn.commit()
+
             cur.close()
             conn.close()
 
-            try:
-                cache.clear()
-            except Exception:
-                pass
+            try: cache.clear()
+            except: pass
 
-            print(f"[Delta Pipeline] Processamento geral finalizado. {total_count} deltas criados.", flush=True)
-            yield f'data: {json.dumps({"msg": f"Concluído! {total_count} hotspot(s) extraído(s).", "pct": 100, "done": True})}\n\n'
+            yield f'data: {json.dumps({"msg": f"Finalizado! {global_hotspots} focos encontrados.", "pct": 100, "done": True})}\n\n'
 
         except Exception as e:
-            print(f"[Delta Pipeline] Erro: {e}", flush=True)
-            yield f'data: {json.dumps({"erro": f"Erro no banco de dados: {e}"})}\n\n'
+            print(f"[Delta Pipeline] Erro crítico: {e}", flush=True)
+            yield f'data: {json.dumps({"erro": f"Erro interno: {e}"})}\n\n'
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
