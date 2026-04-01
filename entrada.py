@@ -542,7 +542,12 @@ def _process_tile_pair(tiff1_bytes, tiff2_bytes, t1_id, t2_id, y1, y2, srid1):
             arr1 = src1.read(1)
             arr2 = src2.read(1)
 
-            mask = (arr1 != arr2) & (arr1 > 0) & (arr2 > 0) & (arr1 < 9999) & (arr2 < 9999)
+            mask = (arr1 != arr2)
+            mask &= (arr1 > 0)
+            mask &= (arr2 > 0)
+            mask &= (arr1 < 9999)
+            mask &= (arr2 < 9999)
+
             if not mask.any():
                 return results
 
@@ -550,8 +555,8 @@ def _process_tile_pair(tiff1_bytes, tiff2_bytes, t1_id, t2_id, y1, y2, srid1):
             t = src1.transform
             pixel_area_ha = abs(t.a * t.e) / 10000.0
 
-            delta_arr = (arr1.astype(np.uint16) * 100 + arr2.astype(np.uint16))
-            delta_arr[~mask] = 0
+            delta_arr = np.zeros_like(arr1, dtype=np.uint16)
+            delta_arr[mask] = arr1[mask].astype(np.uint16) * 100 + arr2[mask].astype(np.uint16)
 
             # Contagem vetorizada de pixels por código — 1 passo O(n) em vez de N passes
             unique_codes, pixel_counts = np.unique(delta_arr[mask], return_counts=True)
@@ -672,15 +677,25 @@ def processar_delta_multi():
                 idx = 0
                 t_start = time.perf_counter()
 
+                import concurrent.futures
                 # Pipeline paralelo: pre-fetch batch de tiles e processa em threads
                 with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
                     futures = {}
-                    batch_buf = []
 
                     for tiff1, tiff2 in tile_cur:
                         idx += 1
                         if not tiff1 or not tiff2:
                             continue
+
+                        # Controle de back-pressure: aguarda caso a fila esteja muito grande para não estourar RAM
+                        while len(futures) >= N_WORKERS * 2:
+                            done_set, _ = concurrent.futures.wait(futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
+                            for f in done_set:
+                                try:
+                                    tuples_to_insert.extend(f.result())
+                                except Exception as e:
+                                    print(f"  > Erro tile batch pleno: {e}", flush=True)
+                                del futures[f]
 
                         # Converte memoryview para bytes imediatamente (thread-safe)
                         t1_bytes = bytes(tiff1)
@@ -859,7 +874,7 @@ def hotspots_geojson_stream():
                 COALESCE(lo.nome, 'Desconhecida') AS nome_origem,
                 COALESCE(ld.nome, 'Desconhecida') AS nome_destino,
                 ST_AsGeoJSON(
-                    ST_SimplifyPreserveTopology(hd.geom, %s), 6
+                    ST_Simplify(hd.geom, %s), 6
                 ) AS geom_json
             FROM hotspot_deltas hd
             LEFT JOIN legenda_classes lo ON lo.codigo = hd.classe_origem
@@ -898,14 +913,12 @@ def hotspots_geojson_stream():
             if not geom_str:
                 continue
             props = {col_names[i]: row[i] for i in range(len(col_names)) if i != geom_idx}
-            feature = {
-                "type": "Feature",
-                "geometry": json.loads(geom_str),
-                "properties": props
-            }
+            props_json = json.dumps(props, default=str)
+            
             if not first:
                 yield ','
-            yield json.dumps(feature, default=str)
+            # Montagem zero-copy (zero-parse): Anexa as geometrias pre-serializadas nativas do PostGIS sem carregar a árvore da entidade pro Python
+            yield f'{{"type":"Feature","geometry":{geom_str},"properties":{props_json}}}'
             first = False
 
         yield ']}'
@@ -1323,4 +1336,4 @@ if __name__ == "__main__":
     print("  Acesse: http://localhost:5000")
     print("  Mapa:   http://localhost:5000/mapa")
     print("=" * 60)
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5000, use_reloader=False)
